@@ -224,6 +224,20 @@ app.post("/api/team", verifyToken, async (req: Request, res: Response) => {
   }
 });
 
+app.put("/api/team/:id", verifyToken, async (req: Request, res: Response) => {
+  try {
+    const updated = await TeamMember.findOneAndUpdate(
+      { id: req.params.id },
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Team member not found" });
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update team member" });
+  }
+});
+
 app.delete("/api/team/:id", verifyToken, async (req: Request, res: Response) => {
   try {
     await TeamMember.deleteOne({ id: req.params.id });
