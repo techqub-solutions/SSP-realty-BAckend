@@ -3,12 +3,17 @@ import cors from "cors";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ssp-realty";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@ssprealty.com";
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
+const JWT_SECRET = process.env.JWT_SECRET || "ssp-realty-jwt-secret-key-change-in-production";
 
 // Middleware
 app.use(cors());
@@ -76,10 +81,37 @@ const contactSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now }
 });
 
+const leadSchema = new mongoose.Schema({
+  id: String,
+  name: String,
+  email: String,
+  phone: String,
+  propertyType: String,
+  budget: String,
+  message: String,
+  created_at: { type: Date, default: Date.now }
+});
+
 // Models
 const Property = mongoose.model("Property", propertySchema);
 const TeamMember = mongoose.model("TeamMember", teamSchema);
 const Contact = mongoose.model("Contact", contactSchema);
+const Lead = mongoose.model("Lead", leadSchema);
+
+// JWT Middleware
+const verifyToken = (req: any, res: Response, next: any) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "No token provided" });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.admin = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ error: "Invalid token" });
+  }
+};
 
 // Routes
 app.get("/", (req: Request, res: Response) => {
@@ -88,6 +120,40 @@ app.get("/", (req: Request, res: Response) => {
 
 app.get("/api/health", (req: Request, res: Response) => {
   res.json({ status: "✓ Backend is running" });
+});
+
+// Auth Routes
+app.post("/api/auth/login", async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+
+    // Validate credentials
+    if (email !== ADMIN_EMAIL) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    // Hash password if not already hashed (first time setup)
+    if (!ADMIN_PASSWORD_HASH) {
+      // If no hash set, deny access and ask to set password
+      return res.status(401).json({ error: "Admin password not configured. Please set ADMIN_PASSWORD_HASH in .env" });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    // Generate JWT Token (24 hour expiry)
+    const token = jwt.sign(
+      { email: ADMIN_EMAIL, role: "admin" },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    res.json({ success: true, token });
+  } catch (error) {
+    res.status(500).json({ error: "Login failed" });
+  }
 });
 
 // Properties Routes
@@ -100,7 +166,7 @@ app.get("/api/properties", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/properties", async (req: Request, res: Response) => {
+app.post("/api/properties", verifyToken, async (req: Request, res: Response) => {
   try {
     const property = new Property(req.body);
     await property.save();
@@ -120,7 +186,7 @@ app.get("/api/properties/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/properties/:id", async (req: Request, res: Response) => {
+app.put("/api/properties/:id", verifyToken, async (req: Request, res: Response) => {
   try {
     await Property.findOneAndUpdate({ id: req.params.id }, req.body);
     res.json({ success: true });
@@ -129,7 +195,7 @@ app.put("/api/properties/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/properties/:id", async (req: Request, res: Response) => {
+app.delete("/api/properties/:id", verifyToken, async (req: Request, res: Response) => {
   try {
     await Property.deleteOne({ id: req.params.id });
     res.json({ success: true });
@@ -148,7 +214,7 @@ app.get("/api/team", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/team", async (req: Request, res: Response) => {
+app.post("/api/team", verifyToken, async (req: Request, res: Response) => {
   try {
     const teamMember = new TeamMember(req.body);
     await teamMember.save();
@@ -158,7 +224,7 @@ app.post("/api/team", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/team/:id", async (req: Request, res: Response) => {
+app.delete("/api/team/:id", verifyToken, async (req: Request, res: Response) => {
   try {
     await TeamMember.deleteOne({ id: req.params.id });
     res.json({ success: true });
@@ -187,6 +253,29 @@ app.get("/api/contact", async (req: Request, res: Response) => {
     res.json(contacts);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch contacts" });
+  }
+});
+
+// Lead Routes (Visitor Lead Capture)
+app.post("/api/leads", async (req: Request, res: Response) => {
+  try {
+    const lead = new Lead({
+      ...req.body,
+      id: Date.now().toString()
+    });
+    await lead.save();
+    res.json({ success: true, data: lead });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to submit lead form" });
+  }
+});
+
+app.get("/api/leads", verifyToken, async (req: Request, res: Response) => {
+  try {
+    const leads = await Lead.find().sort({ created_at: -1 });
+    res.json(leads);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch leads" });
   }
 });
 
