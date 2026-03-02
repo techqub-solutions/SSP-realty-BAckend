@@ -5,6 +5,8 @@ import dotenv from "dotenv";
 import path from "path";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import multer from "multer";
+import fs from "fs";
 
 dotenv.config();
 
@@ -16,9 +18,40 @@ const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const JWT_SECRET = process.env.JWT_SECRET || "ssp-realty-jwt-secret-key-change-in-production";
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  credentials: false,
+  optionsSuccessStatus: 200
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Ensure public/uploads directory exists
+const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Serve static files
+app.use('/public', express.static(path.join(process.cwd(), 'public')));
+
+// Configure multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const timestamp = Date.now();
+    const ext = path.extname(file.originalname);
+    const name = path.basename(file.originalname, ext);
+    cb(null, `${name}-${timestamp}${ext}`);
+  }
+});
+
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 
 // MongoDB Connection
 mongoose.connect(MONGODB_URI)
@@ -92,11 +125,20 @@ const leadSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now }
 });
 
+const gallerySchema = new mongoose.Schema({
+  id: String,
+  type: { type: String, enum: ['image', 'video'], default: 'image' },
+  src: String,
+  title: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
 // Models
 const Property = mongoose.model("Property", propertySchema);
 const TeamMember = mongoose.model("TeamMember", teamSchema);
 const Contact = mongoose.model("Contact", contactSchema);
 const Lead = mongoose.model("Lead", leadSchema);
+const Gallery = mongoose.model("Gallery", gallerySchema);
 
 // JWT Middleware
 const verifyToken = (req: any, res: Response, next: any) => {
@@ -219,8 +261,9 @@ app.post("/api/team", verifyToken, async (req: Request, res: Response) => {
     const teamMember = new TeamMember(req.body);
     await teamMember.save();
     res.json({ success: true, data: teamMember });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to create team member" });
+  } catch (error: any) {
+    console.error("Team creation error:", error.message);
+    res.status(500).json({ error: "Failed to create team member", details: error.message });
   }
 });
 
@@ -270,6 +313,23 @@ app.get("/api/contact", async (req: Request, res: Response) => {
   }
 });
 
+// File Upload Route
+app.post("/api/upload", upload.single('file'), (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || `localhost:${PORT}`;
+    const filePath = `${protocol}://${host}/public/uploads/${req.file.filename}`;
+    console.log(`✓ File uploaded: ${req.file.filename} at ${filePath}`);
+    res.json({ path: filePath });
+  } catch (error) {
+    console.error("Upload error:", error);
+    res.status(500).json({ error: "File upload failed" });
+  }
+});
+
 // Lead Routes (Visitor Lead Capture)
 app.post("/api/leads", async (req: Request, res: Response) => {
   try {
@@ -290,6 +350,39 @@ app.get("/api/leads", verifyToken, async (req: Request, res: Response) => {
     res.json(leads);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch leads" });
+  }
+});
+
+// Gallery Routes
+app.get("/api/gallery", async (req: Request, res: Response) => {
+  try {
+    const gallery = await Gallery.find().sort({ createdAt: -1 });
+    res.json(gallery);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch gallery" });
+  }
+});
+
+app.post("/api/gallery", verifyToken, async (req: Request, res: Response) => {
+  try {
+    const galleryItem = new Gallery({
+      id: Date.now().toString(),
+      ...req.body
+    });
+    await galleryItem.save();
+    res.json({ success: true, data: galleryItem });
+  } catch (error: any) {
+    console.error("Gallery creation error:", error.message);
+    res.status(500).json({ error: "Failed to add gallery item", details: error.message });
+  }
+});
+
+app.delete("/api/gallery/:id", verifyToken, async (req: Request, res: Response) => {
+  try {
+    await Gallery.deleteOne({ id: req.params.id });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delete gallery item" });
   }
 });
 
